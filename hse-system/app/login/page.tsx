@@ -110,7 +110,7 @@ export default function LoginPage() {
         width: '200px'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '10px', padding: '10px' }}>
-          <img src='/logo.JPEG' style={{ width: '100px', height: 'auto', display: 'block' }} alt="Logo" />
+          <img src='logo.png' style={{ width: '100px', height: 'auto', display: 'block' }} alt="Logo" />
           <p style={{ margin: 0, fontSize: '25px', fontWeight: 'bold', letterSpacing: '1px', color: 'white', lineHeight: '1', alignItems: 'center' }}>HSE</p>
         </div>
       </div>
