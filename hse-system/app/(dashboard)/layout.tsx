@@ -1,13 +1,40 @@
 'use client'
 import React from 'react';
 import Link from 'next/link';
-import '@/app/layout-styles.css'; // Đảm bảo đường dẫn này trỏ đúng file CSS dùng chung của bạn
+import { useRouter } from 'next/navigation'; // 👈 1. Thêm useRouter để điều hướng
+import '@/app/layout-styles.css'; 
 
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const router = useRouter(); // Khởi tạo router
+
+  // 👈 2. Hàm xử lý Đăng xuất thực tế gọi qua API Backend
+  const handleLogout = async () => {
+    const confirmLogout = window.confirm("Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?");
+    if (!confirmLogout) return;
+
+    try {
+      // Gọi đến API đăng xuất để xóa Session lưu trong Cookie của Supabase
+      const response = await fetch('/api/logout', {
+        method: 'POST',
+      });
+
+      if (response.ok) {
+        // Sau khi xóa xong session, đẩy người dùng quay lại màn hình đăng nhập gốc
+        router.push('/'); 
+        router.refresh(); // Làm tươi hệ thống để xóa sạch các trạng thái cũ
+      } else {
+        alert('Đăng xuất thất bại, vui lòng thử lại sau!');
+      }
+    } catch (error) {
+      console.error('Lỗi hệ thống khi đăng xuất:', error);
+      alert('Không thể kết nối đến máy chủ!');
+    }
+  };
+
   return (
     <div className="app-container">
       
@@ -38,7 +65,6 @@ export default function DashboardLayout({
                       <p style={{ margin: 0 }}>Báo cáo của tôi</p>
                   </div>
                 </Link>
-                {/* Đã bọc Link cho Báo cáo toàn hệ thống */}
                 <Link href="/reports/all-reports" style={{ textDecoration: 'none' }}>
                   <div className="sidebar-item">
                       <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
@@ -55,13 +81,13 @@ export default function DashboardLayout({
                   <p style={{ margin: 0 }}>Quản lý rủi ro</p>
               </div>              
               <div className="submenu-container">
-                <Link href="/risks/pending-review" style={{ textDecoration: 'none' }}>
+                <Link href="/risks/pending-evaluations" style={{ textDecoration: 'none' }}>
                   <div className="sidebar-item">
                       <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
                       <p style={{ margin: 0 }}>Danh sách chờ đánh giá</p>
                   </div>
                 </Link>
-                <Link href="/risks/assessment" style={{ textDecoration: 'none' }}>
+                <Link href="/risks/pending-evaluations/risk-assessment" style={{ textDecoration: 'none' }}>
                   <div className="sidebar-item">
                       <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
                       <p style={{ margin: 0 }}>Đánh giá rủi ro</p>
@@ -110,17 +136,39 @@ export default function DashboardLayout({
           </nav>
         </div>
 
-        {/* Khối nút Đăng xuất nằm dưới đáy */}
-        <div style={{ padding: '16px', borderTop: '1px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        {/* 👈 3. ĐÃ CẬP NHẬT: Khối nút Đăng xuất kích hoạt hàm xóa session */}
+        <div 
+          onClick={handleLogout}
+          style={{ 
+            padding: '16px', 
+            borderTop: '1px solid rgba(255,255,255,0.1)', 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '8px',
+            cursor: 'pointer' // Tạo hiệu ứng bàn tay khi di chuột vào khối đăng xuất
+          }} 
+        >
           <img src='/log-out.JPEG' style={{ width: '20px', height: '20px', objectFit: 'contain' }} alt="logout"/>
-          <button style={{ background: 'none', border: 'none', color: 'white', fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', padding: 0, fontWeight: 'bold' }}>
+          <button 
+            type="button"
+            style={{ 
+              background: 'none', 
+              border: 'none', 
+              color: 'white', 
+              fontSize: '13px', 
+              cursor: 'pointer', 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '8px', 
+              padding: 0, 
+              fontWeight: 'bold' 
+            }}
+          >
              Đăng xuất
           </button>
         </div>
       </aside>
-      {/* ==================== HẾT THANH SIDEBAR ==================== */}
 
-      {/* */}
       <main style={{ flex: 1, padding: '24px', overflowY: 'auto', backgroundColor: '#E9ECF2' }}>
         {children}
       </main>
