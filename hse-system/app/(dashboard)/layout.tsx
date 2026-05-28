@@ -14,13 +14,9 @@ export default function DashboardLayout({
   const pathname = usePathname(); 
   const supabase = createClient();
 
-  // State lưu vai trò phân quyền của người dùng (Ví dụ: 'employee', 'reviewer', 'admin')
   const [userRole, setUserRole] = useState<string | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true); 
 
-  // =========================================================================
-  // HOOK: LẤY VAI TRÒ (ROLE) CỦA USER ĐỂ PHÂN QUYỀN BẢO VỆ URL
-  // =========================================================================
   useEffect(() => {
     async function getUserRoleFromSupabase() {
       try {
@@ -28,21 +24,20 @@ export default function DashboardLayout({
         const { data: { user }, error: userError } = await supabase.auth.getUser();
         
         if (userError || !user) {
-          router.push('/');
+          window.location.href = '/'; 
           return;
         }
 
-        // Lấy thông tin role từ bảng PROFILES
         let { data: profileData, error: profileError } = await supabase
           .from('PROFILES')
-          .select('role') 
+          .select('role_id') 
           .eq('profile_id', user.id) 
           .maybeSingle();
 
         if (profileError || !profileData) {
           const { data: fallbackData } = await supabase
             .from('PROFILES')
-            .select('role')
+            .select('role_id') 
             .eq('id', user.id)
             .maybeSingle();
           if (fallbackData) {
@@ -50,20 +45,48 @@ export default function DashboardLayout({
           }
         }
 
-        const role = profileData?.role || 'employee';
+        const role = (profileData?.role_id || 'employee').toLowerCase().trim();
         setUserRole(role);
 
-        // 🔒 VÒNG PHÒNG THỦ CỨNG: Nếu cố tình gõ URL các trang bị khóa
-        const allowedPaths = ['/reports/my-reports', '/reports/all-reports'];
-        const isAccessingForbiddenPath = !allowedPaths.some(path => pathname.startsWith(path));
+        // ĐIỀU HƯỚNG TỰ ĐỘNG
+        if (role === 'reviewer' && (pathname === '/' || pathname.startsWith('/reports'))) {
+          router.push('/risk-pending');
+          return;
+        }
+        
+        if (role === 'assessor' && (pathname === '/' || pathname.startsWith('/reports') || pathname.startsWith('/risk-pending'))) {
+          router.push('/risk-assessment');
+          return;
+        }
 
-        if (role === 'employee' && isAccessingForbiddenPath) {
-          alert('Tài khoản Nhân viên không có quyền truy cập vào chức năng này!');
-          router.push('/reports/my-reports'); 
+        // PHÒNG THỦ URL CỨNG
+        if (role === 'employee') {
+          const employeeAllowed = ['/reports/my-reports', '/reports/all-reports'];
+          const isForbidden = !employeeAllowed.some(path => pathname.startsWith(path));
+          if (isForbidden) {
+            alert('Tài khoản Nhân viên không có quyền truy cập vào chức năng này!');
+            router.push('/reports/my-reports'); 
+          }
+        } 
+        else if (role === 'reviewer') {
+          const reviewerAllowed = ['/risk-pending', '/risk-pending/review-detail'];
+          const isForbidden = !reviewerAllowed.some(path => pathname.startsWith(path));
+          if (isForbidden) {
+            alert('Tài khoản Người phê duyệt không có quyền truy cập chức năng này!');
+            router.push('/risk-pending'); 
+          }
+        }
+        else if (role === 'assessor') {
+          const assessorAllowed = ['/risk-assessment'];
+          const isForbidden = !assessorAllowed.some(path => pathname.startsWith(path));
+          if (isForbidden) {
+            alert('Tài khoản Người đánh giá rủi ro không có quyền truy cập chức năng này!');
+            router.push('/risk-assessment'); 
+          }
         }
 
       } catch (err) {
-        console.error("Lỗi khi kiểm tra phân quyền Sidebar:", err);
+        console.error("Lỗi khi kiểm tra phân quyền URL:", err);
       } finally {
         setCheckingAuth(false);
       }
@@ -72,7 +95,6 @@ export default function DashboardLayout({
     getUserRoleFromSupabase();
   }, [pathname]); 
 
-  // Hàm xử lý Đăng xuất
   const handleLogout = async () => {
     const confirmLogout = window.confirm("Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?");
     if (!confirmLogout) return;
@@ -80,8 +102,7 @@ export default function DashboardLayout({
     try {
       const response = await fetch('/api/logout', { method: 'POST' });
       if (response.ok) {
-        router.push('/'); 
-        router.refresh(); 
+        window.location.href = '/'; 
       } else {
         alert('Đăng xuất thất bại, vui lòng thử lại sau!');
       }
@@ -90,122 +111,140 @@ export default function DashboardLayout({
     }
   };
 
-  const isEmployee = userRole === 'employee';
+  const isMenuDisabled = (menuName: string) => {
+    if (userRole === 'admin') return false; 
+    if (userRole === 'employee') return menuName !== 'incident'; 
+    if (userRole === 'reviewer') return menuName !== 'risk-pending';
+    if (userRole === 'assessor') return menuName !== 'risk-assessment';
+    return true;
+  };
 
-  // 💡 HÀM HELPER: Chỉ chặn tương tác click chuột (Không làm mờ, không đổi giao diện)
-  const getDisabledStyle = (disabled: boolean) => {
-    if (disabled) {
-      return {
-        pointerEvents: 'none' as const, // Ngắt toàn bộ sự kiện click, hover, điều hướng
-        userSelect: 'none' as const
-      };
-    }
-    return {};
+  // Trả về style cho item bị khóa (không làm mờ màu, chỉ đổi chuột thành hình cấm bấm)
+  const disabledItemStyle = {
+    cursor: 'not-allowed',
+    userSelect: 'none' as const,
   };
 
   return (
     <div className="app-container">
       
-      {/* ==================== THANH SIDEBAR  ==================== */}
+      {/* SIDEBAR CHÍNH */}
       <aside className="sidebar">
         <div>
-          {/* Cụm Logo và chữ HSE */}
+          {/* Logo */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '10px', padding: '10px' }}>
             <img src='/logo.JPEG' style={{ width: '100px', height: 'auto', display: 'block' }} alt="Logo" />
-            <p style={{ margin: 0, fontSize: '25px', fontWeight: 'bold', letterSpacing: '1px', color: 'white', lineHeight: '1', alignItems: 'center' }}>HSE</p>
+            <p style={{ margin: 0, fontSize: '25px', fontWeight: 'bold', letterSpacing: '1px', color: 'white', lineHeight: '1' }}>HSE</p>
           </div>
           <hr style={{ border: 'none', borderBottom: '1px solid white', margin: '0' }} />
 
-          {/* Cây danh mục tính năng */}
+          {/* Cây danh mục menu */}
           <nav style={{ padding: '16px' }}>
             
-            {/* 1. Danh mục: Quản lý sự cố */}
+            {/* 1. QUAN LÝ SỰ CỐ */}
             <div style={{ marginBottom: '14px' }}>
-              <div className="sidebar-item">  
+              <div className="sidebar-item" style={isMenuDisabled('incident') ? disabledItemStyle : { cursor: 'pointer' }}>  
                 <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
                 <p style={{ margin: 0 }}>Quản lý sự cố</p>            
               </div>
-            
               <div className="submenu-container">
-                <Link href="/reports/my-reports" style={{ textDecoration: 'none' }}>
-                  <div className="sidebar-item">
-                      <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
-                      <p style={{ margin: 0 }}>Báo cáo của tôi</p>
-                  </div>
-                </Link>
-                <Link href="/reports/all-reports" style={{ textDecoration: 'none' }}>
-                  <div className="sidebar-item">
-                      <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
-                      <p style={{ margin: 0 }}>Báo cáo toàn hệ thống</p>
-                  </div>
-                </Link>
+                {/* Báo cáo của tôi */}
+                {!isMenuDisabled('incident') ? (
+                  <Link href="/reports/my-reports" style={{ textDecoration: 'none' }}>
+                    <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Báo cáo của tôi</p></div>
+                  </Link>
+                ) : (
+                  <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Báo cáo của tôi</p></div>
+                )}
+
+                {/* Báo cáo toàn hệ thống */}
+                {!isMenuDisabled('incident') ? (
+                  <Link href="/reports/all-reports" style={{ textDecoration: 'none' }}>
+                    <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Báo cáo toàn hệ thống</p></div>
+                  </Link>
+                ) : (
+                  <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Báo cáo toàn hệ thống</p></div>
+                )}
               </div>
             </div>
 
-            {/* 2. Danh mục: Quản lý rủi ro */}
-            <div style={{ marginBottom: '14px', ...getDisabledStyle(isEmployee) }}>
-              <div className="sidebar-item">
+            {/* 2. QUẢN LÝ RỦI RO */}
+            <div style={{ marginBottom: '14px' }}>
+              <div className="sidebar-item" style={(isMenuDisabled('risk-pending') && isMenuDisabled('risk-assessment')) ? disabledItemStyle : { cursor: 'pointer' }}>
                  <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
                   <p style={{ margin: 0 }}>Quản lý rủi ro</p>
               </div>              
               <div className="submenu-container">
-                <Link href="/risk-pending" style={{ textDecoration: 'none' }}>
-                  <div className="sidebar-item">
-                      <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
-                      <p style={{ margin: 0 }}>Phê duyệt báo cáo</p>
-                  </div>
-                </Link>
-                <Link href="/risk-assessment" style={{ textDecoration: 'none' }}>
-                  <div className="sidebar-item">
-                      <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
-                      <p style={{ margin: 0 }}>Đánh giá rủi ro</p>
-                  </div>
-                </Link>
+                {/* Phê duyệt báo cáo */}
+                {!isMenuDisabled('risk-pending') ? (
+                  <Link href="/risk-pending" style={{ textDecoration: 'none' }}>
+                    <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Phê duyệt báo cáo</p></div>
+                  </Link>
+                ) : (
+                  <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Phê duyệt báo cáo</p></div>
+                )}
+
+                {/* Đánh giá rủi ro */}
+                {!isMenuDisabled('risk-assessment') ? (
+                  <Link href="/risk-assessment" style={{ textDecoration: 'none' }}>
+                    <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Đánh giá rủi ro</p></div>
+                  </Link>
+                ) : (
+                  <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Đánh giá rủi ro</p></div>
+                )}
               </div>
             </div>
 
-            {/* 3. Danh mục: Quản lý CAPA */}
-            <div style={{ marginBottom: '14px', ...getDisabledStyle(isEmployee) }}>
-              <div className="sidebar-item">
+            {/* 3. QUẢN LÝ CAPA */}
+            <div style={{ marginBottom: '14px' }}>
+              <div className="sidebar-item" style={isMenuDisabled('capa') ? disabledItemStyle : { cursor: 'pointer' }}>
                  <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
                 <p style={{ margin: 0 }}>Quản lý CAPA</p>
               </div>
               <div className="submenu-container">
-                <Link href="/capa/add-task" style={{ textDecoration: 'none' }}>
-                  <div className="sidebar-item">
-                      <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
-                      <p style={{ margin: 0 }}>Thêm nhiệm vụ</p>
-                  </div>
-                </Link>
-                <Link href="/capa/my-tasks" style={{ textDecoration: 'none' }}>
-                  <div className="sidebar-item">
-                      <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
-                      <p style={{ margin: 0 }}>Nhiệm vụ của tôi</p>
-                  </div>
-                </Link>
-                <Link href="/capa/acceptance" style={{ textDecoration: 'none' }}>
-                  <div className="sidebar-item">
-                      <img src="/folder-close.JPEG" className="sidebar-img" alt="folder-close"/>
-                      <p style={{ margin: 0 }}>Nghiệm thu</p>
-                  </div>
-                </Link>
+                {!isMenuDisabled('capa') ? (
+                  <>
+                    <Link href="/capa/add-task" style={{ textDecoration: 'none' }}>
+                      <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Thêm nhiệm vụ</p></div>
+                    </Link>
+                    <Link href="/capa/my-tasks" style={{ textDecoration: 'none' }}>
+                      <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ của tôi</p></div>
+                    </Link>
+                    <Link href="/capa/acceptance" style={{ textDecoration: 'none' }}>
+                      <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nghiệm thu</p></div>
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Thêm nhiệm vụ</p></div>
+                    <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ của tôi</p></div>
+                    <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nghiệm thu</p></div>
+                  </>
+                )}
               </div>
             </div>
 
-            {/* 4. Danh mục: Báo cáo & Biểu đồ phân tích */}
-            <div style={{ marginBottom: '10px', ...getDisabledStyle(isEmployee) }}>
-              <Link href="/analytics" style={{ textDecoration: 'none' }}>
-                <div className="sidebar-item">
+            {/* 4. BIỂU ĐỒ PHÂN TÍCH */}
+            <div style={{ marginBottom: '10px' }}>
+              {!isMenuDisabled('analytics') ? (
+                <Link href="/analytics" style={{ textDecoration: 'none' }}>
+                  <div className="sidebar-item">
+                     <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
+                    <p style={{ margin: 0 }}>Biểu đồ nhật ký và sự cố HSE</p>
+                  </div>
+                </Link>
+              ) : (
+                <div className="sidebar-item" style={disabledItemStyle}>
                    <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
                   <p style={{ margin: 0 }}>Biểu đồ nhật ký và sự cố HSE</p>
                 </div>
-              </Link>
+              )}
             </div>
 
           </nav>
         </div>
 
-        {/* Khối nút Đăng xuất */}
+        {/* Nút Đăng xuất */}
         <div onClick={handleLogout} style={{ padding: '16px', borderTop: '1px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
           <img src='/log-out.JPEG' style={{ width: '20px', height: '20px', objectFit: 'contain' }} alt="logout"/>
           <button type="button" style={{ background: 'none', border: 'none', color: 'white', fontSize: '13px', cursor: 'pointer', fontWeight: 'bold' }}>
@@ -214,7 +253,7 @@ export default function DashboardLayout({
         </div>
       </aside>
 
-      {/* Phần hiển thị nội dung trang con */}
+      {/* Main Content */}
       <main style={{ flex: 1, padding: '24px', overflowY: 'auto', backgroundColor: '#E9ECF2' }}>
         {checkingAuth ? (
           <div style={{ padding: '32px', textAlign: 'center', color: '#64748B' }}>Đang xác thực phân quyền hệ thống...</div>

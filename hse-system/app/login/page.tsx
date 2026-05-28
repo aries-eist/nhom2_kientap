@@ -54,7 +54,7 @@ export default function LoginPage() {
           router.push('/capa'); // Vào trang app/(dashboard)/capa
           
         } else if (userRole === 'assessor') {
-          router.push('/risk-assetment'); // Vào trang app/(dashboard)/risk-assetments
+          router.push('/risk-assessment'); // Vào trang app/(dashboard)/risk-assessments
           
         } else if (userRole === 'manager') {
           router.push('/charts'); // Vào trang app/(dashboard)/charts

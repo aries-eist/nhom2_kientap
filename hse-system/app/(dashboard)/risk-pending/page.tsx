@@ -4,9 +4,13 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client'; 
 import '@/app/layout-styles.css'; 
 
-// Cấu hình nhãn trạng thái cố định dành cho Assessor (Flat UI)
+// Cấu hình nhãn trạng thái phẳng (Flat UI) đồng bộ hệ thống mới không dùng border viền cũ
 const statusStyleConfig: Record<string, { label: string; text: string; bg: string }> = {
-  Approved: { label: 'Đã phê duyệt', text: '#10B981', bg: '#D1FAE5' }, 
+  New: { label: 'Mới', text: '#D97706', bg: '#FEF3C7' },
+  RequestInfo: { label: 'Yêu cầu bổ sung', text: '#7C3AED', bg: '#F5F3FF' },
+  Approved: { label: 'Đã phê duyệt', text: '#10B981', bg: '#D1FAE5' },
+  Rejected: { label: 'Đã hủy', text: '#EA580C', bg: '#FFEDD5' },
+  Closed: { label: 'Đã đóng', text: '#2563EB', bg: '#DBEAFE' },
 };
 
 // Từ điển dịch mã loại sự cố sang tiếng Anh chuẩn hóa
@@ -21,17 +25,15 @@ interface UserProfile {
   department: string;
 }
 
-export default function AssessorRiskAssessmentPage() {
+export default function ReviewerRiskPendingPage() {
   const router = useRouter(); 
   const supabase = createClient();
   
-  // Các state bộ lọc theo giao diện đồng bộ hệ thống mới
+  // Các state bộ lọc theo giao diện Mockup nâng cấp
   const [searchTerm, setSearchTerm] = useState('');
   const [incidentTypeFilter, setIncidentTypeFilter] = useState('');
-  const [selectedDate, setSelectedDate] = useState(''); // State chọn ngày cụ thể qua cuốn lịch
-  
-  // KHÓA CHẶT: Chỉ quét các báo cáo có trạng thái Approved (Đã phê duyệt)
-  const statusFilter = 'Approved';
+  const [selectedDate, setSelectedDate] = useState(''); // Chọn ngày cụ thể qua cuốn lịch
+  const [statusFilter, setStatusFilter] = useState('');
   
   // Phân trang
   const [currentPage, setCurrentPage] = useState(1);
@@ -63,7 +65,7 @@ export default function AssessorRiskAssessmentPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Fetch Thông tin Profile người đánh giá rủi ro đổ lên Topbar
+  // Fetch Thông tin Profile người phê duyệt đổ lên Topbar
   useEffect(() => {
     async function fetchUserProfile() {
       try {
@@ -90,7 +92,7 @@ export default function AssessorRiskAssessmentPage() {
 
         if (profileData) setProfile(profileData);
       } catch (err) {
-        console.error("Lỗi lấy thông tin profile assessor:", err);
+        console.error("Lỗi lấy thông tin profile:", err);
       } finally {
         setLoadingProfile(false);
       }
@@ -98,7 +100,7 @@ export default function AssessorRiskAssessmentPage() {
     fetchUserProfile();
   }, []);
 
-  // Realtime thông báo hệ thống dành cho Assessor
+  // Realtime thông báo hệ thống
   useEffect(() => {
     if (!currentUserId) return;
 
@@ -118,7 +120,7 @@ export default function AssessorRiskAssessmentPage() {
     fetchNotifications();
 
     const channel = supabase
-      .channel('realtime-notifications-assessor')
+      .channel('realtime-notifications-reviewer')
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'NOTIFICATION', filter: `receiver_id=eq.${currentUserId}` },
@@ -137,11 +139,11 @@ export default function AssessorRiskAssessmentPage() {
   // Reset về trang 1 khi thay đổi bất kỳ bộ lọc nào
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, incidentTypeFilter, selectedDate]);
+  }, [searchTerm, incidentTypeFilter, selectedDate, statusFilter]);
 
-  // Fetch danh sách các báo cáo bàn giao cho Assessor xử lý
+  // Fetch danh sách toàn bộ các báo cáo cần phê duyệt
   useEffect(() => {
-    async function fetchAssessorReports() {
+    async function fetchAllPendingReports() {
       setLoading(true);
       try {
         const response = await fetch(
@@ -167,11 +169,11 @@ export default function AssessorRiskAssessmentPage() {
     }
 
     const delayDebounceFn = setTimeout(() => {
-      fetchAssessorReports();
+      fetchAllPendingReports();
     }, 300);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchTerm, incidentTypeFilter, selectedDate, currentPage]);
+  }, [searchTerm, statusFilter, incidentTypeFilter, selectedDate, currentPage]);
 
   const handleMarkAsRead = async (id: string, isRead: boolean, linkUrl: string) => {
     if (!isRead) {
@@ -225,8 +227,6 @@ export default function AssessorRiskAssessmentPage() {
       
       {/* 1. TOPBAR HEADER */}
       <header className='topbar' style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', padding: '12px 40px', backgroundColor: 'white', borderBottom: '1px solid #E2E8F0', gap: '24px' }}>
-        
-        {/* Cụm Chuông thông báo */}
         <div className='bell' ref={notiRef} style={{ position: 'relative', cursor: 'pointer', userSelect: 'none' }}>
           <span onClick={() => setIsNotiOpen(!isNotiOpen)} style={{ fontSize: '22px' }}>🔔</span>
           {unreadCount > 0 && (
@@ -270,37 +270,36 @@ export default function AssessorRiskAssessmentPage() {
           )}
         </div>
 
-        {/* Cụm User Profile */}
         <div className='user-profile' style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div className='avatar-box' style={{ width: '36px', height: '36px', borderRadius: '50%', overflow: 'hidden' }}>
             <img src="/avatar-pink.JPEG" alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
           </div>
           <div className='user-info' style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
             <div className='user-name' style={{ fontWeight: 'bold', fontSize: '14px', color: '#0F172A' }}>
-              {loadingProfile ? 'Đang tải...' : (profile?.full_name || 'Họ và tên')}
+              {loadingProfile ? 'Đang tải...' : (profile?.full_name || 'Người phê duyệt')}
             </div>
             <div className='user-role' style={{ fontSize: '11px', color: '#64748B' }}>
-              {loadingProfile ? '...' : (profile?.department || 'Vị trí')}
+              {loadingProfile ? '...' : (profile?.department || 'Ban HSE')}
             </div>
           </div>
         </div>
       </header>
 
-      {/* 2. SECONDBAR TIÊU ĐỀ THEO KIỂU MỚI (BẢN TO, ĐẬM) */}
+      {/* 2. SECONDBAR TIÊU ĐỀ FLAT UI */}
       <div className='second-bar' style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', padding: '24px 40px', backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0' }}>
           <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#000000', letterSpacing: '-0.3px' }}>
-            Quản lý rủi ro &gt; Đánh giá rủi ro
+            Quản lý rủi ro &gt; Phê duyệt báo cáo
           </h2>
       </div>
 
-      {/* 3. KHU VỰC BẢNG LỌC VÀ HIỂN THỊ CHUẨN UI */}
+      {/* 3. KHU VỰC BẢNG LỌC VÀ HIỂN THỊ CHUẨN UI KHÔNG KHÍ THOÁNG */}
       <div className='report-content' style={{ padding: '32px 40px' }}>
         
-        {/* THANH BỘ LỌC ĐA NĂNG ĐỔI THEO UI MỚI */}
+        {/* THANH BỘ LỌC ĐA NĂNG NÂNG CẤP CUỐN LỊCH */}
         <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', marginBottom: '24px', gap: '16px', width: '100%' }}>
             
-            {/* Ô tìm kiếm dạng Input lớn bo góc mềm */}
-            <div style={{ position: 'relative', width: '280px' }}>
+            {/* Ô tìm kiếm mã sự cố */}
+            <div style={{ position: 'relative', width: '260px' }}>
               <span style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', fontSize: '16px', zIndex: 1 }}>🔍</span>
               <input
                 type="text"
@@ -313,7 +312,7 @@ export default function AssessorRiskAssessmentPage() {
 
             {/* Dropdown 1: Loại sự cố */}
             <select
-              style={{ padding: '12px 16px', border: '1px solid #E2E8F0', borderRadius: '10px', fontSize: '14px', backgroundColor: 'white', color: '#334155', cursor: 'pointer', width: '200px', outline: 'none', fontWeight: '500' }}
+              style={{ padding: '12px 16px', border: '1px solid #E2E8F0', borderRadius: '10px', fontSize: '14px', backgroundColor: 'white', color: '#334155', cursor: 'pointer', width: '180px', outline: 'none', fontWeight: '500' }}
               value={incidentTypeFilter}
               onChange={(e) => setIncidentTypeFilter(e.target.value)}
             >
@@ -323,8 +322,8 @@ export default function AssessorRiskAssessmentPage() {
               <option value="NM">Near Miss</option>
             </select>
 
-            {/* Ô chọn ngày bằng Cuốn Lịch (input type="date") */}
-            <div style={{ position: 'relative', width: '200px' }}>
+            {/* 🔥 ĐÃ SỬA: Ô chọn ngày bằng Cuốn Lịch (input type="date") thay cho chọn khoảng ngày cũ */}
+            <div style={{ position: 'relative', width: '180px' }}>
               <input
                 type="date"
                 style={{ 
@@ -336,9 +335,33 @@ export default function AssessorRiskAssessmentPage() {
                 onChange={(e) => setSelectedDate(e.target.value)}
               />
             </div>
+
+            {/* Dropdown 3: Trạng thái phê duyệt */}
+            <select
+              style={{ padding: '12px 16px', border: '1px solid #E2E8F0', borderRadius: '10px', fontSize: '14px', backgroundColor: 'white', color: '#334155', cursor: 'pointer', width: '180px', outline: 'none', fontWeight: '500' }}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <option value="">Tất cả trạng thái</option>
+              <option value="New">Mới</option>
+              <option value="RequestInfo">Yêu cầu bổ sung</option>
+              <option value="Approved">Đã phê duyệt</option>
+              <option value="Rejected">Đã hủy</option>
+              <option value="Closed">Đã đóng</option>
+            </select>
+
+            {/* Nút dọn bộ lọc ngày nhanh */}
+            {selectedDate && (
+              <button 
+                onClick={() => setSelectedDate('')}
+                style={{ background: 'none', border: 'none', color: '#EF4444', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}
+              >
+                Xóa ngày lọc
+              </button>
+            )}
         </div>
 
-        {/* BẢNG DỮ LIỆU ĐỔ THEO PHONG CÁCH FLAT UI MỚI */}
+        {/* BẢNG DỮ LIỆU ĐỔ THEO THIẾT KẾ FLAT UI ĐẬM ĐÀ */}
         <div style={{ backgroundColor: 'white', borderRadius: '12px', border: '1px solid #E2E8F0', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
             <thead>
@@ -355,18 +378,18 @@ export default function AssessorRiskAssessmentPage() {
               {loading ? (
                 <tr>
                   <td colSpan={6} style={{ padding: '40px', textAlign: 'center', color: '#64748B', fontStyle: 'italic' }}>
-                    Đang quét danh sách dữ liệu...
+                    Đang quét danh sách phê duyệt...
                   </td>
                 </tr>
               ) : reports.length === 0 ? (
                 <tr>
                   <td colSpan={6} style={{ padding: '40px', textAlign: 'center', color: '#94A3B8' }}>
-                    Hiện tại không có báo cáo đã phê duyệt nào khớp với bộ lọc rủi ro.
+                    Hiện tại không có báo cáo nào khớp với điều kiện tìm kiếm.
                   </td>
                 </tr>
               ) : (
                 reports.map((rep) => {
-                  const badge = statusStyleConfig[rep.status] || { label: 'Đã phê duyệt', text: '#10B981', bg: '#D1FAE5' };
+                  const badge = statusStyleConfig[rep.status] || { label: rep.status, text: '#000000', bg: '#F1F5F9' };
 
                   return (
                     <tr key={rep.report_id} style={{ borderBottom: '1px solid #F1F5F9', transition: 'background-color 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#F8FAFC'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}>
@@ -386,10 +409,10 @@ export default function AssessorRiskAssessmentPage() {
 
                       <td style={{ padding: '20px 24px', textAlign: 'center' }}>
                         <button 
-                          onClick={() => router.push(`/risk-assessment/view-risk-assessment?id=${rep.report_id}`)}
+                          onClick={() => router.push(`/risk-pending/view-pending-report?id=${rep.report_id}`)}
                           style={{ background: 'none', border: 'none', color: '#000000', fontWeight: '600', fontSize: '14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', margin: '0 auto' }}
                         >
-                         <img src='/view.JPEG' width='10px' alt='view'></img> Xem
+                          👁️ Xem
                         </button>
                       </td>
                     </tr>
@@ -399,7 +422,7 @@ export default function AssessorRiskAssessmentPage() {
             </tbody>
           </table>
 
-          {/* THANH PHÂN TRANG TRONG SUỐT SẠCH SẼ */}
+          {/* ĐOẠN PHÂN TRANG */}
           <div style={{ padding: '20px 24px', backgroundColor: 'white', borderTop: '1px solid #F1F5F9', display: 'flex', justifyContent: 'flex-end', gap: '6px', alignItems: 'center' }}>
             <button 
               disabled={currentPage === 1}
