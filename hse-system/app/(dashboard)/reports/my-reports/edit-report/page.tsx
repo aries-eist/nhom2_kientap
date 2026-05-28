@@ -1,11 +1,18 @@
 'use client'
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { createClient } from '@/utils/supabase/client'; 
 import '@/app/layout-styles.css';
+
+interface UserProfile {
+  full_name: string;
+  department: string;
+}
 
 function EditReportFormContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const supabase = createClient();
   
   // Bóc tách mã báo cáo từ thanh URL (Ví dụ: ?id=REP-0005)
   const reportIdFromUrl = searchParams.get('id');
@@ -15,10 +22,23 @@ function EditReportFormContent() {
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
 
+  // State quản lý ID người dùng đăng nhập thực tế
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+  // State quản lý Profile cá nhân hiển thị lên thanh Topbar
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+
+  // 🔔 CÁC STATE BỔ SUNG CHO CHUÔNG THÔNG BÁO ĐỘNG
+  const [isNotiOpen, setIsNotiOpen] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const notiRef = useRef<HTMLDivElement>(null);
+
   // Khởi tạo State lưu trữ dữ liệu form trống ban đầu
   const [formData, setFormData] = useState({
     report_id: '',
-    incident_type_id: 'UC', // Mặc định khớp mã khóa ngoại UC, UA, NM trong database
+    incident_type_id: 'UC', 
     location: '',
     occurred_date: '',
     occurred_time: '',
@@ -29,24 +49,119 @@ function EditReportFormContent() {
 
   const [imageEvidence, setImageEvidence] = useState<string | null>(null);
 
-  // 1. useEffect kéo dữ liệu thật từ database đổ vào Form khi mở trang
+  // Tự động đóng menu thông báo khi click ra ngoài vùng chuông
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (notiRef.current && !notiRef.current.contains(event.target as Node)) {
+        setIsNotiOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // =========================================================================
+  // HOOK 1: LẤY THÔNG TIN USER ĐĂNG NHẬP ĐỂ ĐỔ LÊN TOPBAR
+  // =========================================================================
+  useEffect(() => {
+    async function fetchUserProfile() {
+      try {
+        setLoadingProfile(true);
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        
+        if (userError || !user) {
+          console.error("Không tìm thấy thông tin user đăng nhập:", userError);
+          return;
+        }
+
+        setCurrentUserId(user.id);
+
+        let { data: profileData, error: profileError } = await supabase
+          .from('PROFILES')
+          .select('full_name, department')
+          .eq('profile_id', user.id) 
+          .maybeSingle();
+
+        if (profileError || !profileData) {
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from('PROFILES')
+            .select('full_name, department')
+            .eq('id', user.id)
+            .maybeSingle();
+          
+          if (!fallbackError && fallbackData) {
+            profileData = fallbackData;
+          }
+        }
+
+        if (profileData) {
+          setProfile(profileData);
+        }
+      } catch (err) {
+        console.error("Lỗi hệ thống khi lấy profile Topbar:", err);
+      } finally {
+        setLoadingProfile(false);
+      }
+    }
+
+    fetchUserProfile();
+  }, []);
+
+  // =========================================================================
+  // 🔔 HOOK BỔ SUNG: FETCH + REALTIME THÔNG BÁO CHO USER ĐANG ĐĂNG NHẬP
+  // =========================================================================
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+        .from('NOTIFICATION')
+        .select('*')
+        .eq('receiver_id', currentUserId)
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        setNotifications(data);
+        setUnreadCount(data.filter(n => !n.is_read).length);
+      }
+    };
+
+    fetchNotifications();
+
+    const channel = supabase
+      .channel('realtime-notifications-edit-page')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'NOTIFICATION', filter: `receiver_id=eq.${currentUserId}` },
+        (payload) => {
+          setNotifications(prev => [payload.new, ...prev]);
+          setUnreadCount(prev => prev + 1);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId]);
+
+  // =========================================================================
+  // HOOK 2: KÉO DỮ LIỆU THẬT TỪ DATABASE ĐỔ VÀO FORM KHI MỞ TRANG
+  // =========================================================================
   useEffect(() => {
     if (!reportIdFromUrl) return;
 
     async function fetchReportDetail() {
       try {
         setLoading(true);
-        // Gọi tới API lấy chi tiết báo cáo chuẩn chỉnh (không có s)
         const res = await fetch(`/api/reports/detail?id=${reportIdFromUrl}`);
         if (!res.ok) throw new Error("Không thể tải thông tin báo cáo");
         
         const data = await res.json();
         
-        // Tách chuỗi thời gian occurred_at từ Database (YYYY-MM-DDTHH:mm:ss...) thành Ngày và Giờ riêng lẻ cho form
         const rawDate = data.occurred_at ? data.occurred_at.split('T')[0] : '';
         const rawTime = data.occurred_at ? data.occurred_at.split('T')[1]?.substring(0, 5) : '';
 
-        // Đổ toàn bộ dữ liệu thật vào State form đúng thuộc tính của bảng
         setFormData({
           report_id: data.report_id,
           incident_type_id: data.incident_type_id || 'UC',
@@ -54,7 +169,7 @@ function EditReportFormContent() {
           occurred_date: rawDate,
           occurred_time: rawTime,
           short_description: data.short_description || '',
-          detailed_description: data.long_description || '', // Khớp với trường long_description trong DB
+          detailed_description: data.long_description || '', 
           initial_action: data.reviewer_feedback || '' 
         });
         
@@ -75,12 +190,47 @@ function EditReportFormContent() {
     fetchReportDetail();
   }, [reportIdFromUrl]);
 
+  // Hàm bấm xem và đánh dấu đã đọc thông báo
+  const handleMarkAsRead = async (id: string, isRead: boolean, linkUrl: string) => {
+    if (!isRead) {
+      const { error } = await supabase
+        .from('NOTIFICATION')
+        .update({ is_read: true })
+        .eq('notification_id', id);
+
+      if (!error) {
+        setNotifications(prev =>
+          prev.map(n => n.notification_id === id ? { ...n, is_read: true } : n)
+        );
+        setUnreadCount(prev => Math.max(0, prev - 1));
+      }
+    }
+    if (linkUrl) {
+      router.push(linkUrl);
+      setIsNotiOpen(false);
+    }
+  };
+
+  // Hàm đánh dấu đã đọc toàn bộ thông báo cùng lúc
+  const handleMarkAllAsRead = async () => {
+    if (!currentUserId || unreadCount === 0) return;
+    const { error } = await supabase
+      .from('NOTIFICATION')
+      .update({ is_read: true })
+      .eq('receiver_id', currentUserId)
+      .eq('is_read', false);
+
+    if (!error) {
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      setUnreadCount(0);
+    }
+  };
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  // 2. Hàm Lưu - Sửa triệt để lỗi 404 bằng cách đẩy trúng về API detail phương thức PUT
   const handleSave = async () => {
     try {
       if (!reportIdFromUrl) {
@@ -95,7 +245,6 @@ function EditReportFormContent() {
 
       setIsSaving(true);
       
-      // Gộp ngày và giờ lại thành chuỗi ISO chuẩn cơ sở dữ liệu timestamp để thỏa mãn cột datetime NOT NULL
       let combinedOccurredAt = '';
       try {
         combinedOccurredAt = new Date(`${formData.occurred_date}T${formData.occurred_time}:00`).toISOString();
@@ -105,7 +254,6 @@ function EditReportFormContent() {
         return;
       }
 
-      // 💡 ĐÃ ĐỔI: Gọi chính xác vào link /api/reports/detail?id=... (Đồng bộ khớp API xử lý của bạn)
       const response = await fetch(`/api/reports/detail?id=${reportIdFromUrl}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -119,7 +267,6 @@ function EditReportFormContent() {
       });
 
       if (response.ok) {
-        // Nếu database cập nhật thành công, mở Modal thông báo cho người dùng
         setShowSuccessModal(true);
       } else {
         const errData = await response.json().catch(() => ({}));
@@ -130,6 +277,16 @@ function EditReportFormContent() {
       alert(`Lỗi kết nối máy chủ không thể lưu: ${error.message}`);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const formatDateTime = (dateString: string) => {
+    if (!dateString) return '';
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleString('vi-VN', { hour12: false }).replace(',', '');
+    } catch (e) {
+      return dateString;
     }
   };
 
@@ -174,20 +331,73 @@ function EditReportFormContent() {
   }
 
   return (
-    <main className='main-content' style={{ backgroundColor: '#F0F4F8', minHeight: '100vh', position: 'relative', boxSizing: 'border-box' }}>
+    <main className='main-content' style={{ boxSizing: 'border-box', backgroundColor: '#F0F4F8', minHeight: '100vh', position: 'relative' }}>
       
       {/* 1. THANH HEADER TOPBAR */}
       <header className='topbar'>
-        <div className='bell'>
-          🔔<span className='notice-number'>1</span>
+        
+        {/* CỤM CHUÔNG THÔNG BÁO ĐỘNG KẾT NỐI REALTIME */}
+        <div className='bell' ref={notiRef} style={{ position: 'relative', cursor: 'pointer', userSelect: 'none' }}>
+          <span onClick={() => setIsNotiOpen(!isNotiOpen)} style={{ fontSize: '20px' }}>🔔</span>
+          {unreadCount > 0 && (
+            <span className='notice-number' onClick={() => setIsNotiOpen(!isNotiOpen)}>
+              {unreadCount}
+            </span>
+          )}
+
+          {/* POPUP DANH SÁCH THÔNG BÁO CHUẨN MOCKUP */}
+          {isNotiOpen && (
+            <div style={{
+              position: 'absolute', right: '-10px', top: '35px', width: '320px', backgroundColor: 'white',
+              border: '1px solid #E2E8F0', borderRadius: '8px', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+              zIndex: 999, overflow: 'hidden', textAlign: 'left'
+            }}>
+              <div style={{ padding: '12px 16px', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
+                <span style={{ color: '#1E293B' }}>Thông báo</span>
+                <span onClick={handleMarkAllAsRead} style={{ fontSize: '11px', color: '#2F80ED', fontWeight: 'normal', cursor: 'pointer' }}>Đánh dấu đã đọc tất cả</span>
+              </div>
+
+              <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
+                {notifications.length === 0 ? (
+                  <div style={{ padding: '20px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>Không có thông báo nào</div>
+                ) : (
+                  notifications.map((noti) => (
+                    <div
+                      key={noti.notification_id}
+                      onClick={() => handleMarkAsRead(noti.notification_id, noti.is_read, noti.link_url)}
+                      style={{
+                        padding: '12px 16px', borderBottom: '1px solid #F8FAFC', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', cursor: 'pointer',
+                        backgroundColor: noti.is_read ? 'white' : '#F0F7FF', transition: 'background-color 0.2s'
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: noti.is_read ? '600' : 'bold', fontSize: '13px', color: '#1E293B' }}>{noti.title}</div>
+                        <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px', lineClamp: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{noti.content}</div>
+                        <div style={{ fontSize: '10px', color: '#94A3B8', marginTop: '4px' }}>{formatDateTime(noti.created_at)}</div>
+                      </div>
+                      {/* CHẤM XANH CHƯA ĐỌC GIỐNG HỆT FILE HÌNH */}
+                      {!noti.is_read && (
+                        <div style={{ width: '8px', height: '8px', backgroundColor: '#2F80ED', borderRadius: '50%', marginTop: '5px', flexShrink: 0 }}></div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
+
         <div className='user-profile'>
           <div className='avatar-box'>
             <img src="/avatar-pink.JPEG" alt="avatar" className='avatar-img'/>
           </div>
-          <div className='user-info'>
-            <div className='user-name'>Họ và tên</div>
-            <div className='user-role'>Vị trí</div>
+          <div className='user-info' style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
+              <div className='user-name' style={{ fontWeight: 'bold', fontSize: '13px', color: '#1E293B' }}>
+                {loadingProfile ? 'Đang tải...' : (profile?.full_name || 'Chưa cập nhật tên')}
+              </div>
+              <div className='user-role' style={{ fontSize: '11px', color: '#64748B' }}>
+                {loadingProfile ? '...' : (profile?.department || 'Chưa xếp phòng ban')}
+              </div>
           </div>
         </div>
       </header>
@@ -202,7 +412,7 @@ function EditReportFormContent() {
       </div>
 
       {/* 3. KHU VỰC GRID FORM NHẬP LIỆU CHỈNH SỬA */}
-      <div style={{ padding: '24px 32px' }}>
+      <div className='report-content' style={{ padding: '24px 32px' }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px 24px', backgroundColor: '#FFFFFF', padding: '24px', borderRadius: '4px', border: '1px solid #CBD5E1' }}>
           
           <div>
@@ -274,7 +484,7 @@ function EditReportFormContent() {
 
         </div>
 
-        {/* 💡 ĐÃ SỬA: Khối nút chức năng dưới cùng căn phải luôn chứa cả 2 nút Lưu và Quay về danh sách màu Indigo (#4460A0) */}
+        {/* Khối nút chức năng dưới cùng */}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '14px', marginTop: '24px' }}>
           <button 
             onClick={handleSave}

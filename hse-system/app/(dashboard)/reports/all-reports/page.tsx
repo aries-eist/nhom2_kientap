@@ -1,8 +1,14 @@
 'use client'
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation'; 
+import { createClient } from '@/utils/supabase/client'; 
 import '@/app/layout-styles.css'; 
+
+interface UserProfile {
+  full_name: string;
+  department: string;
+}
 
 const statusStyleConfig: Record<string, { label: string; text: string; bg: string; border: string }> = {
   New: { label: 'Mới', text: '#CDA000', bg: '#FFFDE6', border: '#FFF9B3' },
@@ -14,6 +20,8 @@ const statusStyleConfig: Record<string, { label: string; text: string; bg: strin
 
 export default function MyReportsNormalPage() {
   const router = useRouter(); 
+  const supabase = createClient(); 
+
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   
@@ -25,16 +33,118 @@ export default function MyReportsNormalPage() {
   const [reports, setReports] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Thông tin User thực tế trên Topbar
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+
+  // 🔔 CÁC STATE BỔ SUNG CHO CHUÔNG THÔNG BÁO
+  const [isNotiOpen, setIsNotiOpen] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const notiRef = useRef<HTMLDivElement>(null);
+
+  // Click ra ngoài chuông thì tự động đóng menu thông báo lại
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (notiRef.current && !notiRef.current.contains(event.target as Node)) {
+        setIsNotiOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // Khi người dùng thay đổi bộ lọc tìm kiếm hoặc trạng thái, tự động reset về trang 1
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, statusFilter]);
 
+  // 🔄 Load thông tin tài khoản đăng nhập phục vụ Topbar và Chuông
   useEffect(() => {
+    async function fetchUserProfile() {
+      try {
+        setLoadingProfile(true);
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          setCurrentUserId(user.id);
+
+          // Thực hiện tìm kiếm thông tin cá nhân trong bảng PROFILES
+          let { data: profileData } = await supabase
+            .from('PROFILES')
+            .select('full_name, department')
+            .eq('profile_id', user.id) 
+            .maybeSingle();
+
+          if (!profileData) {
+            const { data: fallbackData } = await supabase
+              .from('PROFILES')
+              .select('full_name, department')
+              .eq('id', user.id)
+              .maybeSingle();
+            if (fallbackData) profileData = fallbackData;
+          }
+
+          if (profileData) {
+            setProfile(profileData);
+          }
+        }
+      } catch (err) {
+        console.error('Lỗi khi lấy thông tin profile người dùng:', err);
+      } finally {
+        setLoadingProfile(false);
+      }
+    }
+    fetchUserProfile();
+  }, []);
+
+  // 🔔 FETCH + REALTIME THÔNG BÁO CHO USER ĐANG ĐĂNG NHẬP
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+        .from('NOTIFICATION')
+        .select('*')
+        .eq('receiver_id', currentUserId)
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        setNotifications(data);
+        setUnreadCount(data.filter(n => !n.is_read).length);
+      }
+    };
+
+    fetchNotifications();
+
+    // Kênh realtime tự nhẩy số chuông khi có thông báo đổ về database
+    const channel = supabase
+      .channel('realtime-notifications')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'NOTIFICATION', filter: `receiver_id=eq.${currentUserId}` },
+        (payload) => {
+          setNotifications(prev => [payload.new, ...prev]);
+          setUnreadCount(prev => prev + 1);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId]);
+
+  // 🔄 FETCH BÁO CÁO (Đã gài lọc theo user.id đang đăng nhập)
+  useEffect(() => {
+    // Chỉ kích hoạt gọi API khi đã xác định được ID của user đang đăng nhập
+    if (!currentUserId) return;
+
     async function fetchReportsFromSupabase() {
       setLoading(true);
       try {
-        const response = await fetch(`/api/reports?search=${searchTerm}&status=${statusFilter}&page=${currentPage}`);
+        // 🛠️ ĐÃ SỬA: Gửi kèm param userId=${currentUserId} để API chỉ trả về báo cáo của chính họ
+        const response = await fetch(`/api/reports?search=${searchTerm}&status=${statusFilter}&page=${currentPage}&userId=${currentUserId}`);
         if (!response.ok) {
           throw new Error('Lỗi không thể lấy dữ liệu từ Server');
         }
@@ -61,10 +171,46 @@ export default function MyReportsNormalPage() {
     }, 300);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchTerm, statusFilter, currentPage]);
+  }, [searchTerm, statusFilter, currentPage, currentUserId]);
+
+  // Hàm click vào dòng để đọc thông báo
+  const handleMarkAsRead = async (id: string, isRead: boolean, linkUrl: string) => {
+    if (!isRead) {
+      const { error } = await supabase
+        .from('NOTIFICATION')
+        .update({ is_read: true })
+        .eq('notification_id', id);
+
+      if (!error) {
+        setNotifications(prev =>
+          prev.map(n => n.notification_id === id ? { ...n, is_read: true } : n)
+        );
+        setUnreadCount(prev => Math.max(0, prev - 1));
+      }
+    }
+    // Điều hướng trang xử lý dựa vào trường link_url lưu trong DB
+    if (linkUrl) {
+      router.push(linkUrl);
+      setIsNotiOpen(false);
+    }
+  };
+
+  // Hàm Đánh dấu đọc tất cả
+  const handleMarkAllAsRead = async () => {
+    if (!currentUserId || unreadCount === 0) return;
+    const { error } = await supabase
+      .from('NOTIFICATION')
+      .update({ is_read: true })
+      .eq('receiver_id', currentUserId)
+      .eq('is_read', false);
+
+    if (!error) {
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      setUnreadCount(0);
+    }
+  };
 
   const totalPages = Math.ceil(totalReports / pageSize) || 1;
-
   const pageNumbers = [];
   for (let i = 1; i <= totalPages; i++) {
     pageNumbers.push(i);
@@ -81,24 +227,77 @@ export default function MyReportsNormalPage() {
   };
 
   return (
-      <main className='main-content'>
+      <main className='main-content' style={{ boxSizing: 'border-box' }}>
         <header className='topbar'>
-          <div className='bell'>
-            🔔<span className='notice-number'>1</span>
+          
+          {/* CỤM CHUÔNG THÔNG BÁO ĐỘNG */}
+          <div className='bell' ref={notiRef} style={{ position: 'relative', cursor: 'pointer', userSelect: 'none' }}>
+            <span onClick={() => setIsNotiOpen(!isNotiOpen)} style={{ fontSize: '20px' }}>🔔</span>
+            {unreadCount > 0 && (
+              <span className='notice-number' onClick={() => setIsNotiOpen(!isNotiOpen)}>
+                {unreadCount}
+              </span>
+            )}
+
+            {/* KHUNG DANH SÁCH THÔNG BÁO KHI BẤM CHUÔNG */}
+            {isNotiOpen && (
+              <div style={{
+                position: 'absolute', right: '-10px', top: '35px', width: '320px', backgroundColor: 'white',
+                border: '1px solid #E2E8F0', borderRadius: '8px', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+                zIndex: 999, overflow: 'hidden', textAlign: 'left'
+              }}>
+                <div style={{ padding: '12px 16px', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
+                  <span style={{ color: '#1E293B' }}>Thông báo</span>
+                  <span onClick={handleMarkAllAsRead} style={{ fontSize: '11px', color: '#2F80ED', fontWeight: 'normal', cursor: 'pointer' }}>Đánh dấu đã đọc tất cả</span>
+                </div>
+
+                <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
+                  {notifications.length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>Không có thông báo nào</div>
+                  ) : (
+                    notifications.map((noti) => (
+                      <div
+                        key={noti.notification_id}
+                        onClick={() => handleMarkAsRead(noti.notification_id, noti.is_read, noti.link_url)}
+                        style={{
+                          padding: '12px 16px', borderBottom: '1px solid #F8FAFC', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', cursor: 'pointer',
+                          backgroundColor: noti.is_read ? 'white' : '#F0F7FF', transition: 'background-color 0.2s'
+                        }}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: noti.is_read ? '600' : 'bold', fontSize: '13px', color: '#1E293B' }}>{noti.title}</div>
+                          <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px', lineClamp: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{noti.content}</div>
+                          <div style={{ fontSize: '10px', color: '#94A3B8', marginTop: '4px' }}>{formatDateTime(noti.created_at)}</div>
+                        </div>
+                        {/* CHẤM XANH CHƯA ĐỌC GIỐNG HỆT FILE HÌNH CỦA BÀ */}
+                        {!noti.is_read && (
+                          <div style={{ width: '8px', height: '8px', backgroundColor: '#2F80ED', borderRadius: '50%', marginTop: '5px', flexShrink: 0 }}></div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
+
           <div className='user-profile'>
             <div className='avatar-box'>
               <img src="/avatar-pink.JPEG" alt="avatar" className='avatar-img'/>
             </div>
-            <div className='user-info'>
-              <div className='user-name'>Họ và tên</div>
-              <div className='user-role'>Vị trí</div>
+            <div className='user-info' style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
+              <div className='user-name' style={{ fontWeight: 'bold', fontSize: '13px', color: '#1E293B' }}>
+                {loadingProfile ? 'Đang tải...' : (profile?.full_name || 'Chưa cập nhật')}
+              </div>
+              <div className='user-role' style={{ fontSize: '11px', color: '#64748B' }}>
+                {loadingProfile ? '...' : (profile?.department || 'Chưa xếp phòng ban')}
+              </div>
             </div>
           </div>
         </header>
 
         <div className='second-bar'>
-            <h2 className='second-bar-content' style={{ fontWeight: 'bold', color: '#000000', fontSize: '16px' }}>
+            <h2 className='second-bar-content' style={{ fontWeight: 'bold', color: '#000000', fontSize: '16px', margin: 0 }}>
               Quản lý sự cố &gt; Báo cáo của tôi
             </h2>
         </div>
@@ -189,7 +388,6 @@ export default function MyReportsNormalPage() {
                           </span>
                         </td>
 
-                        {/* CỘT THAO TÁC: CHỈ GIỮ LẠI NÚT XEM VỚI BIỂU TƯỢNG RÕ RÀNG */}
                         <td style={{ padding: '20px', textAlign: 'center' }}>
                           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
                             <button 
@@ -251,9 +449,7 @@ export default function MyReportsNormalPage() {
               </button>
             </div>
           </div>
-
         </div>
-
       </main>
   );
 }

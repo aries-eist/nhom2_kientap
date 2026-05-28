@@ -1,9 +1,10 @@
 'use client'
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { createClient } from '@/utils/supabase/client'; 
 import '@/app/layout-styles.css';
 
-// Cấu hình nhãn trạng thái với viền và nền màu vàng nhạt chuẩn theo hình mẫu (Mới)
+// Cấu hình nhãn trạng thái với viền và nền màu vàng nhạt chuẩn theo hình mẫu
 const statusStyleConfig: Record<string, { label: string; text: string; bg: string; border: string }> = {
   New: { label: 'Mới', text: '#B29300', bg: '#FFFDE6', border: '#E8DB8D' },
   RequestInfo: { label: 'Yêu cầu bổ sung', text: '#B02BB8', bg: '#F9E6FA', border: '#F3B3F5' },
@@ -18,21 +19,138 @@ const incidentTypeLabels: Record<string, string> = {
   NM: 'Near Miss',
 };
 
+interface UserProfile {
+  full_name: string;
+  department: string;
+}
+
 function ReportDetailContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const reportId = searchParams.get('id');
+  const supabase = createClient();
 
   const [reportData, setReportData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
+  // State quản lý ID người dùng đăng nhập thực tế
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+  // State quản lý Profile cá nhân hiển thị trên thanh Topbar
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+
+  // 🔔 CÁC STATE BỔ SUNG CHO CHUÔNG THÔNG BÁO ĐỘNG
+  const [isNotiOpen, setIsNotiOpen] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const notiRef = useRef<HTMLDivElement>(null);
+
+  // Tự động đóng menu thông báo khi click ra ngoài vùng chuông
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (notiRef.current && !notiRef.current.contains(event.target as Node)) {
+        setIsNotiOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // =========================================================================
+  // HOOK 1: LẤY THÔNG TIN USER ĐĂNG NHẬP ĐỂ ĐỔ LÊN TOPBAR
+  // =========================================================================
+  useEffect(() => {
+    async function fetchUserProfile() {
+      try {
+        setLoadingProfile(true);
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        
+        if (userError || !user) {
+          console.error("Không tìm thấy thông tin user đăng nhập:", userError);
+          return;
+        }
+
+        setCurrentUserId(user.id);
+
+        let { data: profileData, error: profileError } = await supabase
+          .from('PROFILES')
+          .select('full_name, department')
+          .eq('profile_id', user.id) 
+          .maybeSingle();
+
+        if (profileError || !profileData) {
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from('PROFILES')
+            .select('full_name, department')
+            .eq('id', user.id)
+            .maybeSingle();
+          
+          if (!fallbackError && fallbackData) {
+            profileData = fallbackData;
+          }
+        }
+
+        if (profileData) {
+          setProfile(profileData);
+        }
+      } catch (err) {
+        console.error("Lỗi hệ thống khi lấy profile:", err);
+      } finally {
+        setLoadingProfile(false);
+      }
+    }
+
+    fetchUserProfile();
+  }, []);
+
+  // =========================================================================
+  // 🔔 HOOK BỔ SUNG: FETCH + REALTIME THÔNG BÁO CHO USER ĐANG ĐĂNG NHẬP
+  // =========================================================================
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+        .from('NOTIFICATION')
+        .select('*')
+        .eq('receiver_id', currentUserId)
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        setNotifications(data);
+        setUnreadCount(data.filter(n => !n.is_read).length);
+      }
+    };
+
+    fetchNotifications();
+
+    const channel = supabase
+      .channel('realtime-notifications-detail-page')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'NOTIFICATION', filter: `receiver_id=eq.${currentUserId}` },
+        (payload) => {
+          setNotifications(prev => [payload.new, ...prev]);
+          setUnreadCount(prev => prev + 1);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId]);
+
+  // =========================================================================
+  // HOOK 2: LẤY CHI TIẾT BÁO CÁO SỰ CỐ
+  // =========================================================================
   useEffect(() => {
     if (!reportId) return;
 
     async function fetchDetail() {
       try {
         setLoading(true);
-        // Link API chuẩn (đã sửa lỗi details thừa chữ s)
         const res = await fetch(`/api/reports/detail?id=${reportId}`);
         
         if (!res.ok) {
@@ -53,7 +171,43 @@ function ReportDetailContent() {
     fetchDetail();
   }, [reportId]);
 
-  // Định dạng hiển thị ngày chỉ lấy Date (DD/MM/YYYY) giống hệt ảnh mẫu 12/04/2026
+  // Hàm bấm xem và đánh dấu đã đọc thông báo
+  const handleMarkAsRead = async (id: string, isRead: boolean, linkUrl: string) => {
+    if (!isRead) {
+      const { error } = await supabase
+        .from('NOTIFICATION')
+        .update({ is_read: true })
+        .eq('notification_id', id);
+
+      if (!error) {
+        setNotifications(prev =>
+          prev.map(n => n.notification_id === id ? { ...n, is_read: true } : n)
+        );
+        setUnreadCount(prev => Math.max(0, prev - 1));
+      }
+    }
+    if (linkUrl) {
+      router.push(linkUrl);
+      setIsNotiOpen(false);
+    }
+  };
+
+  // Hàm đánh dấu đã đọc toàn bộ thông báo cùng lúc
+  const handleMarkAllAsRead = async () => {
+    if (!currentUserId || unreadCount === 0) return;
+    const { error } = await supabase
+      .from('NOTIFICATION')
+      .update({ is_read: true })
+      .eq('receiver_id', currentUserId)
+      .eq('is_read', false);
+
+    if (!error) {
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      setUnreadCount(0);
+    }
+  };
+
+  // Định dạng hiển thị ngày chỉ lấy Date (DD/MM/YYYY)
   const formatDateOnly = (dateString: string) => {
     if (!dateString) return '---';
     try {
@@ -62,6 +216,16 @@ function ReportDetailContent() {
       const month = String(date.getMonth() + 1).padStart(2, '0');
       const year = date.getFullYear();
       return `${day}/${month}/${year}`;
+    } catch (e) {
+      return dateString;
+    }
+  };
+
+  const formatDateTime = (dateString: string) => {
+    if (!dateString) return '';
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleString('vi-VN', { hour12: false }).replace(',', '');
     } catch (e) {
       return dateString;
     }
@@ -83,7 +247,7 @@ function ReportDetailContent() {
   const badge = statusStyleConfig[reportData.status] || { label: reportData.status, text: '#475569', bg: '#F1F5F9', border: '#CBD5E1' };
   const isEditable = reportData.status === 'New' || reportData.status === 'RequestInfo';
 
-  // --- HỆ THỐNG INLINE STYLES ĐỒNG BỘ 100% THEO HÌNH ---
+  // --- HỆ THỐNG INLINE STYLES ĐỒNG BỘ 100% ---
   const containerStyle = {
     backgroundColor: '#FFFFFF',
     borderRadius: '4px',
@@ -136,31 +300,86 @@ function ReportDetailContent() {
   };
 
   return (
-    <main className='main-content'>
+    <main className='main-content' style={{ boxSizing: 'border-box', backgroundColor: '#F0F4F8', minHeight: '100vh', position: 'relative' }}>
+        
+        {/* 1. THANH TOPBAR HEADER */}
         <header className='topbar'>
-          <div className='bell'>
-            🔔<span className='notice-number'>1</span>
+          
+          {/* CỤM CHUÔNG THÔNG BÁO ĐỘNG KẾT NỐI REALTIME */}
+          <div className='bell' ref={notiRef} style={{ position: 'relative', cursor: 'pointer', userSelect: 'none' }}>
+            <span onClick={() => setIsNotiOpen(!isNotiOpen)} style={{ fontSize: '20px' }}>🔔</span>
+            {unreadCount > 0 && (
+              <span className='notice-number' onClick={() => setIsNotiOpen(!isNotiOpen)}>
+                {unreadCount}
+              </span>
+            )}
+
+            {/* POPUP DANH SÁCH THÔNG BÁO CHUẨN MOCKUP */}
+            {isNotiOpen && (
+              <div style={{
+                position: 'absolute', right: '-10px', top: '35px', width: '320px', backgroundColor: 'white',
+                border: '1px solid #E2E8F0', borderRadius: '8px', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+                zIndex: 999, overflow: 'hidden', textAlign: 'left'
+              }}>
+                <div style={{ padding: '12px 16px', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
+                  <span style={{ color: '#1E293B' }}>Thông báo</span>
+                  <span onClick={handleMarkAllAsRead} style={{ fontSize: '11px', color: '#2F80ED', fontWeight: 'normal', cursor: 'pointer' }}>Đánh dấu đã đọc tất cả</span>
+                </div>
+
+                <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
+                  {notifications.length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>Không có thông báo nào</div>
+                  ) : (
+                    notifications.map((noti) => (
+                      <div
+                        key={noti.notification_id}
+                        onClick={() => handleMarkAsRead(noti.notification_id, noti.is_read, noti.link_url)}
+                        style={{
+                          padding: '12px 16px', borderBottom: '1px solid #F8FAFC', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', cursor: 'pointer',
+                          backgroundColor: noti.is_read ? 'white' : '#F0F7FF', transition: 'background-color 0.2s'
+                        }}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: noti.is_read ? '600' : 'bold', fontSize: '13px', color: '#1E293B' }}>{noti.title}</div>
+                          <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px', lineClamp: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{noti.content}</div>
+                          <div style={{ fontSize: '10px', color: '#94A3B8', marginTop: '4px' }}>{formatDateTime(noti.created_at)}</div>
+                        </div>
+                        {!noti.is_read && (
+                          <div style={{ width: '8px', height: '8px', backgroundColor: '#2F80ED', borderRadius: '50%', marginTop: '5px', flexShrink: 0 }}></div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
+
           <div className='user-profile'>
             <div className='avatar-box'>
               <img src="/avatar-pink.JPEG" alt="avatar" className='avatar-img'/>
             </div>
-            <div className='user-info'>
-              <div className='user-name'>Họ và tên</div>
-              <div className='user-role'>Vị trí</div>
+            <div className='user-info' style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
+              <div className='user-name' style={{ fontWeight: 'bold', fontSize: '13px', color: '#1E293B' }}>
+                {loadingProfile ? 'Đang tải...' : (profile?.full_name || 'Chưa cập nhật tên')}
+              </div>
+              <div className='user-role' style={{ fontSize: '11px', color: '#64748B' }}>
+                {loadingProfile ? '...' : (profile?.department || 'Chưa xếp phòng ban')}
+              </div>
             </div>
           </div>
         </header>
 
-        <div className='second-bar' style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '20px', padding: '16px 32px', height: 'auto', justifyContent: 'flex-start' }}>
-        <button onClick={() => router.back()} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#1E293B', padding: '0', display: 'flex', alignItems: 'center' }}>←</button>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', textAlign: 'left' }}>
-          <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold', color: '#0F172A', lineHeight: '1.2' }}>Báo cáo chi tiết</h2>
+        {/* 2. THANH SECONDBAR TIÊU ĐỀ TRANG */}
+        <div className='second-bar' style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '20px', padding: '14px 32px', backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0' }}>
+          <button onClick={() => router.back()} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#1E293B', padding: '0', display: 'flex', alignItems: 'center' }}>←</button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', textAlign: 'left' }}>
+            <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#000000', lineHeight: '1.2' }}>Báo cáo chi tiết</h2>
+          </div>
         </div>
-      </div>
 
       {/* 3. KHU VỰC HIỂN THỊ CHI TIẾT NỘI DUNG FORM */}
-      <div style={{ padding: '24px 32px' }}>
+      <div className='report-content' style={{ padding: '24px 32px' }}>
         
         {/* CARD 1: THÔNG TIN SỰ CỐ */}
         <div style={containerStyle}>
@@ -209,12 +428,19 @@ function ReportDetailContent() {
                   borderRadius: '4px', 
                   overflow: 'hidden', 
                   border: '1px solid #CBD5E1',
-                  marginTop: '2px'
+                  marginTop: '2px',
+                  backgroundColor: '#F8FAFC',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
                 }}>
                   <img 
-                    src={reportData.image_url || "https://images.unsplash.com/photo-1581094288338-2314dddb7ece?w=400"} 
+                    src={reportData.image_url || "https://placehold.co/90x90/e2e8f0/64748b?text=No+Image"} 
                     alt="Hiện trường" 
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    onError={(e) => {
+                      e.currentTarget.src = "https://placehold.co/90x90/e2e8f0/64748b?text=Error+Image";
+                    }}
                   />
                 </div>
               </div>
@@ -234,7 +460,7 @@ function ReportDetailContent() {
           </div>
         )}
 
-        {/* CARD 2: THÔNG TIN KHÁC (KHỚP 100% GIAO DIỆN MẪU) */}
+        {/* CARD 2: THÔNG TIN KHÁC */}
         <div style={containerStyle}>
           <div style={headerStyle}>
             <span>Thông tin khác</span>
@@ -257,8 +483,6 @@ function ReportDetailContent() {
             <button 
               onClick={() => router.push(`/reports/my-reports/edit-report?id=${reportData.report_id}`)}
               style={{ ...buttonStyle, backgroundColor: '#4460A0' }}
-              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#344b82')}
-              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#4460A0')}
             >
               Chỉnh sửa
             </button>
@@ -267,8 +491,6 @@ function ReportDetailContent() {
           <button 
             onClick={() => router.push('/reports/my-reports')}
             style={{ ...buttonStyle, backgroundColor: '#4460A0' }}
-            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#344b82')}
-            onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#4460A0')}
           >
             Quay về danh sách
           </button>
@@ -286,3 +508,5 @@ export default function ReportDetailPage() {
     </Suspense>
   );
 }
+
+

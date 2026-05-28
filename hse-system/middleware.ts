@@ -2,13 +2,14 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
-  // Tạo response cơ bản
+  // Tạo response cơ bản để tiếp tục luồng chạy
   let response = NextResponse.next({
     request: {
       headers: request.headers,
     },
   })
 
+  // Khởi tạo Supabase Client dành cho môi trường Server (Middleware)
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -26,45 +27,31 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // 1. Kiểm tra session user
+  const { pathname } = request.nextUrl
+
+
+  if (pathname.startsWith('/api/')) {
+    return response
+  }
+
+  // Lấy thông tin user hiện tại từ Supabase Auth
   const { data: { user } } = await supabase.auth.getUser()
 
-  // 2. Nếu chưa login mà đòi vào trang bảo mật -> chuyển về trang login
-  if (!user && !request.nextUrl.pathname.startsWith('/login')) {
+
+  if (!user && !pathname.startsWith('/login')) {
     return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  // 3. Nếu đã login và đang ở trang chủ "/" -> Điều hướng theo Role
-  if (user && request.nextUrl.pathname === '/') {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
 
-    const role = profile?.role
-
-    // Chuyển hướng thông minh dựa trên Role
-    if (role === 'manager') {
-      return NextResponse.redirect(new URL('/dashboard/manager', request.url))
-    } 
-    if (role === 'employee') {
-      return NextResponse.redirect(new URL('/dashboard/employee', request.url))
-    } 
-    if (role === 'reviewer') {
-      return NextResponse.redirect(new URL('/dashboard/reviewer', request.url))
-    }
-    if (role === 'assessor') {
-      return NextResponse.redirect(new URL('/dashboard/assessor', request.url))
-    }
-    if (role === 'coordinator') {
-      return NextResponse.redirect(new URL('/dashboard/coordinator', request.url))
-    }
+  if (user && (pathname === '/' || pathname === '/login')) {
+    return response
   }
 
   return response
 }
 
+// Cấu hình Matcher: Áp dụng Middleware cho toàn bộ dự án
+// NGOẠI TRỪ: các file tĩnh (ảnh png, jpeg, svg...), file hệ thống _next, favicon
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
 }

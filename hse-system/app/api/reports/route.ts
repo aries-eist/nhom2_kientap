@@ -10,6 +10,9 @@ export async function GET(request: Request) {
     const search = searchParams.get('search') || '';
     const status = searchParams.get('status') || '';
     
+    // ĐÃ THÊM: Bắt lấy biến userId (UUID của người đăng nhập) từ Frontend gửi sang
+    const userId = searchParams.get('userId');
+    
     // Đọc thông tin phân trang (Mặc định trang 1, mỗi trang 20 dòng)
     const page = parseInt(searchParams.get('page') || '1', 10);
     const pageSize = 20;
@@ -30,6 +33,11 @@ export async function GET(request: Request) {
         )
       `, { count: 'exact' })
       .order('created_at', { ascending: false });
+
+    // ĐÃ THÊM: Ép điều kiện lọc bảo mật - Chỉ lấy báo cáo do chính người này tạo ra
+    if (userId) {
+      query = query.eq('created_by', userId);
+    }
 
     if (status) {
       query = query.eq('status', status);

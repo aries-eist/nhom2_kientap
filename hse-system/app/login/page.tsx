@@ -45,7 +45,7 @@ export default function LoginPage() {
         const userRole = result.role; // Lấy giá trị cột role_id từ backend trả về ('employee', 'manager'...)
 
         if (userRole === 'employee') {
-          router.push('/reports'); // Vào trang app/(dashboard)/reports
+          router.push('/reports/my-reports'); 
           
         } else if (userRole === 'reviewer') {
           router.push('/risk-pending'); // Vào trang app/(dashboard)/risks

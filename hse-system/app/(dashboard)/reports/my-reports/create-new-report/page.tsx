@@ -5,6 +5,11 @@ import { createClient } from '@/utils/supabase/client';
 import { uploadFile } from '@/lib/storage'; 
 import '@/app/layout-styles.css'; 
 
+interface UserProfile {
+  full_name: string;
+  department: string;
+}
+
 export default function CreateReportPage() {
   const router = useRouter();
   const supabase = createClient();
@@ -22,6 +27,16 @@ export default function CreateReportPage() {
   // State quản lý ID của người dùng đang đăng nhập thực tế
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
+  // State quản lý thông tin Profile cá nhân hiển thị lên thanh Topbar
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+
+  // 🔔 STATE BỔ SUNG CHO CHUÔNG THÔNG BÁO ĐỘNG
+  const [isNotiOpen, setIsNotiOpen] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const notiRef = useRef<HTMLDivElement>(null);
+
   // State quản lý File Ảnh đính kèm
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -34,6 +49,17 @@ export default function CreateReportPage() {
   const [successTime, setSuccessTime] = useState(''); 
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Đóng cụm dropdown thông báo khi click ra ngoài vùng chuông
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (notiRef.current && !notiRef.current.contains(event.target as Node)) {
+        setIsNotiOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // HÀM TÌM MÃ TIẾP THEO BẰNG CÁCH LẤY MAX(REPORT_ID) TRONG DATABASE
   const generateNextReportId = async () => {
@@ -60,26 +86,120 @@ export default function CreateReportPage() {
     }
   };
 
-  // 🔄 Khởi chạy khi load trang: Lấy User thực tế đang đăng nhập + Mã báo cáo tạm tính
+  // Khởi chạy khi load trang: Lấy User thực tế đang đăng nhập + Mã báo cáo tạm tính + Dữ liệu Topbar
   useEffect(() => {
     const initPageData = async () => {
-      // 1. Tính mã báo cáo tiếp theo
       const nextId = await generateNextReportId();
       setReportId(nextId);
 
-      // 2. Lấy thông tin user thực tế đang đăng nhập từ Supabase Auth
-      const { data: { user }, error } = await supabase.auth.getUser();
-      if (user) {
-        setCurrentUserId(user.id);
-      } else {
-        console.warn('⚠️ Chưa tìm thấy phiên đăng nhập thực tế của User.');
-        // Nếu hệ thống của bạn dùng bảng nhân viên tùy biến không qua Auth, 
-        // bạn hãy điền 1 mã UUID tồn tại sẵn trong bảng nhân viên của bạn vào đây để test:
-        // setCurrentUserId('MÃ_UUID_CÓ_THẬT_TRONG_DB_CỦA_BẠN');
+      try {
+        setLoadingProfile(true);
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          setCurrentUserId(user.id);
+
+          let { data: profileData } = await supabase
+            .from('PROFILES')
+            .select('full_name, department')
+            .eq('profile_id', user.id) 
+            .maybeSingle();
+
+          if (!profileData) {
+            const { data: fallbackData } = await supabase
+              .from('PROFILES')
+              .select('full_name, department')
+              .eq('id', user.id)
+              .maybeSingle();
+            
+            if (fallbackData) {
+              profileData = fallbackData;
+            }
+          }
+
+          if (profileData) {
+            setProfile(profileData);
+          }
+        }
+      } catch (err) {
+        console.error('Lỗi khởi tạo cấu trúc trang:', err);
+      } finally {
+        setLoadingProfile(false);
       }
     };
     initPageData();
   }, []);
+
+  // 🔔 FETCH + REALTIME THÔNG BÁO CHO USER ĐANG ĐĂNG NHẬP
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+        .from('NOTIFICATION')
+        .select('*')
+        .eq('receiver_id', currentUserId)
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        setNotifications(data);
+        setUnreadCount(data.filter(n => !n.is_read).length);
+      }
+    };
+
+    fetchNotifications();
+
+    const channel = supabase
+      .channel('realtime-notifications-create-page')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'NOTIFICATION', filter: `receiver_id=eq.${currentUserId}` },
+        (payload) => {
+          setNotifications(prev => [payload.new, ...prev]);
+          setUnreadCount(prev => prev + 1);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId]);
+
+  // Hàm bấm vào đọc từng thông báo
+  const handleMarkAsRead = async (id: string, isRead: boolean, linkUrl: string) => {
+    if (!isRead) {
+      const { error } = await supabase
+        .from('NOTIFICATION')
+        .update({ is_read: true })
+        .eq('notification_id', id);
+
+      if (!error) {
+        setNotifications(prev =>
+          prev.map(n => n.notification_id === id ? { ...n, is_read: true } : n)
+        );
+        setUnreadCount(prev => Math.max(0, prev - 1));
+      }
+    }
+    if (linkUrl) {
+      router.push(linkUrl);
+      setIsNotiOpen(false);
+    }
+  };
+
+  // Hàm đánh dấu đọc tất cả thông báo
+  const handleMarkAllAsRead = async () => {
+    if (!currentUserId || unreadCount === 0) return;
+    const { error } = await supabase
+      .from('NOTIFICATION')
+      .update({ is_read: true })
+      .eq('receiver_id', currentUserId)
+      .eq('is_read', false);
+
+    if (!error) {
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      setUnreadCount(0);
+    }
+  };
 
   const labelStyle = { display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: '#1E293B' };
   const inputStyle = { width: '100%', padding: '10px 12px', border: '1px solid #CBD5E1', borderRadius: '4px', fontSize: '13px', outline: 'none', color: '#000000', backgroundColor: '#FFFFFF', boxSizing: 'border-box' as const };
@@ -109,7 +229,16 @@ export default function CreateReportPage() {
     fileInputRef.current?.click();
   };
 
-  // 🛠️ HÀM BACKEND: XỬ LÝ LƯU DỮ LIỆU ĐỒNG BỘ XUỐNG SUPABASE
+  const formatDateTime = (dateString: string) => {
+    if (!dateString) return '';
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleString('vi-VN', { hour12: false }).replace(',', '');
+    } catch (e) {
+      return dateString;
+    }
+  };
+
   const handleSubmit = async () => {
     if (!incidentTypeId || !location || !date || !time || !shortDescription || !selectedFile) {
       setShowErrorModal(true);
@@ -125,12 +254,9 @@ export default function CreateReportPage() {
 
     try {
       const occurredAt = new Date(`${date}T${time}:00`).toISOString();
-
-      // Tính toán lại mã báo cáo mới nhất ngay tại thời điểm bấm nút Gửi để tránh trùng lặp
       const finalReportId = await generateNextReportId();
       setReportId(finalReportId); 
 
-      // BƯỚC 1: Thêm mới dòng dữ liệu vào bảng chính INCIDENT_REPORT
       const { error: dbError } = await supabase
         .from('INCIDENT_REPORT') 
         .insert([
@@ -141,21 +267,20 @@ export default function CreateReportPage() {
             occurred_at: occurredAt,
             short_description: shortDescription,
             long_description: longDescription,
+            reviewer_feedback: actionTaken, 
             status: 'New', 
-            created_by: currentUserId, // Gửi UUID chuẩn của người dùng đang đăng nhập
+            created_by: currentUserId, 
             created_at: new Date().toISOString()
           }
         ]);
 
       if (dbError) throw dbError;
 
-      // BƯỚC 2: Đẩy ảnh lên Bucket 'evidence' bằng hàm hệ thống
       const uploadResult = await uploadFile(selectedFile, 'evidence');
       if (!uploadResult.success || !uploadResult.url) {
         throw new Error(uploadResult.error?.message || 'Lỗi xảy ra trong quá trình upload ảnh minh chứng.');
       }
 
-      // BƯỚC 3: Thêm thông tin đường dẫn ảnh vào bảng phụ INCIDENT_IMAGE
       const generatedImageId = 'IMG' + Math.random().toString(36).substring(2, 11).toUpperCase();
       
       const { error: imgDbError } = await supabase
@@ -166,14 +291,13 @@ export default function CreateReportPage() {
             report_id: finalReportId, 
             image_url: uploadResult.url,  
             is_original: true,
-            uploaded_by: currentUserId, // Gửi UUID chuẩn của người dùng đang đăng nhập
+            uploaded_by: currentUserId, 
             uploaded_at: new Date().toISOString()
           }
         ]);
 
       if (imgDbError) throw imgDbError;
 
-      // Ghi nhận thời gian gửi thành công
       const now = new Date();
       const formattedDate = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
       setSuccessTime(formattedDate);
@@ -182,10 +306,7 @@ export default function CreateReportPage() {
       
     } catch (error: any) {
       console.error('🔴 Lỗi tích hợp hệ thống:', error);
-      const errorMessage = error?.message 
-        || error?.error?.message 
-        || (typeof error === 'string' ? error : JSON.stringify(error)) 
-        || 'Lỗi không xác định';
+      const errorMessage = error?.message || 'Lỗi không xác định';
       alert('Không thể hoàn tất lưu báo cáo: ' + errorMessage);
     } finally {
       setIsSubmitting(false);
@@ -193,20 +314,73 @@ export default function CreateReportPage() {
   };
 
   return (
-    <main className='main-content' style={{ position: 'relative', backgroundColor: '#F0F4F8', minHeight: '100vh', boxSizing: 'border-box' }}>
+    <main className='main-content' style={{ boxSizing: 'border-box', backgroundColor: '#F0F4F8', minHeight: '100vh', position: 'relative' }}>
       
       {/* 1. THANH TOPBAR HEADER */}
       <header className='topbar'>
-        <div className='bell'>
-          🔔<span className='notice-number'>1</span>
+        
+        {/* CỤM CHUÔNG THÔNG BÁO ĐỘNG KẾT NỐI REALTIME */}
+        <div className='bell' ref={notiRef} style={{ position: 'relative', cursor: 'pointer', userSelect: 'none' }}>
+          <span onClick={() => setIsNotiOpen(!isNotiOpen)} style={{ fontSize: '20px' }}>🔔</span>
+          {unreadCount > 0 && (
+            <span className='notice-number' onClick={() => setIsNotiOpen(!isNotiOpen)}>
+              {unreadCount}
+            </span>
+          )}
+
+          {/* POPUP DANH SÁCH THÔNG BÁO CHUẨN MOCKUP */}
+          {isNotiOpen && (
+            <div style={{
+              position: 'absolute', right: '-10px', top: '35px', width: '320px', backgroundColor: 'white',
+              border: '1px solid #E2E8F0', borderRadius: '8px', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+              zIndex: 999, overflow: 'hidden', textAlign: 'left'
+            }}>
+              <div style={{ padding: '12px 16px', fontWeight: 'bold', fontSize: '14px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
+                <span style={{ color: '#1E293B' }}>Thông báo</span>
+                <span onClick={handleMarkAllAsRead} style={{ fontSize: '11px', color: '#2F80ED', fontWeight: 'normal', cursor: 'pointer' }}>Đánh dấu đã đọc tất cả</span>
+              </div>
+
+              <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
+                {notifications.length === 0 ? (
+                  <div style={{ padding: '20px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>Không có thông báo nào</div>
+                ) : (
+                  notifications.map((noti) => (
+                    <div
+                      key={noti.notification_id}
+                      onClick={() => handleMarkAsRead(noti.notification_id, noti.is_read, noti.link_url)}
+                      style={{
+                        padding: '12px 16px', borderBottom: '1px solid #F8FAFC', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', cursor: 'pointer',
+                        backgroundColor: noti.is_read ? 'white' : '#F0F7FF', transition: 'background-color 0.2s'
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: noti.is_read ? '600' : 'bold', fontSize: '13px', color: '#1E293B' }}>{noti.title}</div>
+                        <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px', lineClamp: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{noti.content}</div>
+                        <div style={{ fontSize: '10px', color: '#94A3B8', marginTop: '4px' }}>{formatDateTime(noti.created_at)}</div>
+                      </div>
+                      {/* CHẤM XANH CHƯA ĐỌC */}
+                      {!noti.is_read && (
+                        <div style={{ width: '8px', height: '8px', backgroundColor: '#2F80ED', borderRadius: '50%', marginTop: '5px', flexShrink: 0 }}></div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
+
         <div className='user-profile'>
           <div className='avatar-box'>
             <img src="/avatar-pink.JPEG" alt="avatar" className='avatar-img'/>
           </div>
-          <div className='user-info'>
-            <div className='user-name'>Họ và tên</div>
-            <div className='user-role'>Vị trí</div>
+          <div className='user-info' style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
+              <div className='user-name' style={{ fontWeight: 'bold', fontSize: '13px', color: '#1E293B' }}>
+                {loadingProfile ? 'Đang tải...' : (profile?.full_name || 'Chưa cập nhật tên')}
+              </div>
+              <div className='user-role' style={{ fontSize: '11px', color: '#64748B' }}>
+                {loadingProfile ? '...' : (profile?.department || 'Chưa xếp phòng ban')}
+              </div>
           </div>
         </div>
       </header>
@@ -221,7 +395,7 @@ export default function CreateReportPage() {
       </div>
 
       {/* 3. KHÔNG GIAN BẢNG FORM ĐIỀN THÔNG TIN */}
-      <div style={{ padding: '24px 32px' }}>
+      <div className='report-content' style={{ padding: '24px 32px' }}>
         <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '4px', border: '1px solid #CBD5E1' }}>
           
           <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '32px 20px', margin: '-20px -32px' }}>
