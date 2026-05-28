@@ -32,7 +32,8 @@ export async function POST(request: Request) {
     let userId = authData?.user?.id;
     if (!userId) {
       const { data: { user } } = await supabase.auth.getUser();
-      userId = user?.id;
+      // 🌟 ĐÃ SỬA: Thêm || '' để xử lý triệt để lỗi TypeScript gán 'string | undefined' cho 'string'
+      userId = user?.id || '';
     }
 
     if (!userId) {
