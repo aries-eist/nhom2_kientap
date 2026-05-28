@@ -48,7 +48,7 @@ export default function DashboardLayout({
         const role = (profileData?.role_id || 'employee').toLowerCase().trim();
         setUserRole(role);
 
-        // ĐIỀU HƯỚNG TỰ ĐỘNG
+        // --- ĐIỀU HƯỚNG TỰ ĐỘNG THEO VAILID URL CHUẨN ---
         if (role === 'reviewer' && (pathname === '/' || pathname.startsWith('/reports'))) {
           router.push('/risk-pending');
           return;
@@ -59,29 +59,72 @@ export default function DashboardLayout({
           return;
         }
 
-        // PHÒNG THỦ URL CỨNG
+        if (role === 'coordinator' && (pathname === '/' || pathname === '/capa' || pathname.startsWith('/reports') || pathname.startsWith('/risk-pending') || pathname.startsWith('/risk-assessment'))) {
+          router.push('/capa/add-task');
+          return;
+        }
+
+        if (role === 'assignee' && (pathname === '/' || pathname === '/capa' || pathname.startsWith('/reports') || pathname.startsWith('/risk-pending') || pathname.startsWith('/risk-assessment'))) {
+          router.push('/capa/my-tasks');
+          return;
+        }
+
+        if (role === 'manager' && (pathname === '/' || pathname.startsWith('/reports') || pathname.startsWith('/risk-pending') || pathname.startsWith('/risk-assessment') || pathname.startsWith('/capa'))) {
+          router.push('/charts');
+          return;
+        }
+
+        // --- PHÒNG THỦ URL CỨNG CHẶN TRUY CẬP LẬU ---
+        const isPathAllowed = (allowedPaths: string[]) => {
+          return allowedPaths.some(path => pathname === path || pathname.startsWith(path + '/'));
+        };
+
         if (role === 'employee') {
           const employeeAllowed = ['/reports/my-reports', '/reports/all-reports'];
-          const isForbidden = !employeeAllowed.some(path => pathname.startsWith(path));
-          if (isForbidden) {
+          if (!isPathAllowed(employeeAllowed)) {
             alert('Tài khoản Nhân viên không có quyền truy cập vào chức năng này!');
             router.push('/reports/my-reports'); 
+            return;
           }
         } 
         else if (role === 'reviewer') {
           const reviewerAllowed = ['/risk-pending', '/risk-pending/review-detail'];
-          const isForbidden = !reviewerAllowed.some(path => pathname.startsWith(path));
-          if (isForbidden) {
+          if (!isPathAllowed(reviewerAllowed)) {
             alert('Tài khoản Người phê duyệt không có quyền truy cập chức năng này!');
             router.push('/risk-pending'); 
+            return;
           }
         }
         else if (role === 'assessor') {
           const assessorAllowed = ['/risk-assessment'];
-          const isForbidden = !assessorAllowed.some(path => pathname.startsWith(path));
-          if (isForbidden) {
+          if (!isPathAllowed(assessorAllowed)) {
             alert('Tài khoản Người đánh giá rủi ro không có quyền truy cập chức năng này!');
             router.push('/risk-assessment'); 
+            return;
+          }
+        }
+        else if (role === 'coordinator') {
+          const coordinatorAllowed = ['/capa/add-task', '/capa/acceptance'];
+          if (!isPathAllowed(coordinatorAllowed)) {
+            alert('Tài khoản Điều phối không có quyền truy cập chức năng này!');
+            router.push('/capa/add-task'); 
+            return;
+          }
+        }
+        else if (role === 'assignee') {
+          const assigneeAllowed = ['/capa/my-tasks'];
+          if (!isPathAllowed(assigneeAllowed)) {
+            alert('Tài khoản Người thực hiện không có quyền truy cập chức năng này!');
+            router.push('/capa/my-tasks'); 
+            return;
+          }
+        }
+        else if (role === 'manager') {
+          const managerAllowed = ['/charts'];
+          if (!isPathAllowed(managerAllowed)) {
+            alert('Tài khoản Quản lý (Manager) chỉ có quyền truy cập biểu đồ phân tích HSE!');
+            router.push('/charts'); 
+            return;
           }
         }
 
@@ -113,42 +156,41 @@ export default function DashboardLayout({
 
   const isMenuDisabled = (menuName: string) => {
     if (userRole === 'admin') return false; 
+    if (userRole === 'manager') return menuName !== 'charts'; 
     if (userRole === 'employee') return menuName !== 'incident'; 
     if (userRole === 'reviewer') return menuName !== 'risk-pending';
     if (userRole === 'assessor') return menuName !== 'risk-assessment';
+    if (userRole === 'coordinator' || userRole === 'assignee') return menuName !== 'capa'; 
     return true;
   };
 
-  // Trả về style cho item bị khóa (không làm mờ màu, chỉ đổi chuột thành hình cấm bấm)
   const disabledItemStyle = {
     cursor: 'not-allowed',
     userSelect: 'none' as const,
   };
 
   return (
-    <div className="app-container">
+    <div className="app-container" style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
       
-      {/* SIDEBAR CHÍNH */}
-      <aside className="sidebar">
+      {/* SIDEBAR THANH ĐIỀU HƯỚNG */}
+      <aside className="sidebar" style={{ width: '260px', backgroundColor: '#4C6FC2', color: '#fff', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
         <div>
           {/* Logo */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '10px', padding: '10px' }}>
             <img src='/logo.JPEG' style={{ width: '100px', height: 'auto', display: 'block' }} alt="Logo" />
             <p style={{ margin: 0, fontSize: '25px', fontWeight: 'bold', letterSpacing: '1px', color: 'white', lineHeight: '1' }}>HSE</p>
           </div>
-          <hr style={{ border: 'none', borderBottom: '1px solid white', margin: '0' }} />
+          <hr style={{ border: 'none', borderBottom: '1px solid rgba(255,255,255,0.2)', margin: '0' }} />
 
-          {/* Cây danh mục menu */}
+          {/* Menu */}
           <nav style={{ padding: '16px' }}>
-            
-            {/* 1. QUAN LÝ SỰ CỐ */}
+            {/* QUẢN LÝ SỰ CỐ */}
             <div style={{ marginBottom: '14px' }}>
               <div className="sidebar-item" style={isMenuDisabled('incident') ? disabledItemStyle : { cursor: 'pointer' }}>  
                 <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
                 <p style={{ margin: 0 }}>Quản lý sự cố</p>            
               </div>
-              <div className="submenu-container">
-                {/* Báo cáo của tôi */}
+              <div className="submenu-container" style={{ paddingLeft: '12px' }}>
                 {!isMenuDisabled('incident') ? (
                   <Link href="/reports/my-reports" style={{ textDecoration: 'none' }}>
                     <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Báo cáo của tôi</p></div>
@@ -156,8 +198,6 @@ export default function DashboardLayout({
                 ) : (
                   <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Báo cáo của tôi</p></div>
                 )}
-
-                {/* Báo cáo toàn hệ thống */}
                 {!isMenuDisabled('incident') ? (
                   <Link href="/reports/all-reports" style={{ textDecoration: 'none' }}>
                     <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Báo cáo toàn hệ thống</p></div>
@@ -168,14 +208,13 @@ export default function DashboardLayout({
               </div>
             </div>
 
-            {/* 2. QUẢN LÝ RỦI RO */}
+            {/* QUẢN LÝ RỦI RO */}
             <div style={{ marginBottom: '14px' }}>
               <div className="sidebar-item" style={(isMenuDisabled('risk-pending') && isMenuDisabled('risk-assessment')) ? disabledItemStyle : { cursor: 'pointer' }}>
                  <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
                   <p style={{ margin: 0 }}>Quản lý rủi ro</p>
               </div>              
-              <div className="submenu-container">
-                {/* Phê duyệt báo cáo */}
+              <div className="submenu-container" style={{ paddingLeft: '12px' }}>
                 {!isMenuDisabled('risk-pending') ? (
                   <Link href="/risk-pending" style={{ textDecoration: 'none' }}>
                     <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Phê duyệt báo cáo</p></div>
@@ -183,8 +222,6 @@ export default function DashboardLayout({
                 ) : (
                   <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Phê duyệt báo cáo</p></div>
                 )}
-
-                {/* Đánh giá rủi ro */}
                 {!isMenuDisabled('risk-assessment') ? (
                   <Link href="/risk-assessment" style={{ textDecoration: 'none' }}>
                     <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Đánh giá rủi ro</p></div>
@@ -195,39 +232,51 @@ export default function DashboardLayout({
               </div>
             </div>
 
-            {/* 3. QUẢN LÝ CAPA */}
+            {/* QUẢN LÝ CAPA */}
             <div style={{ marginBottom: '14px' }}>
               <div className="sidebar-item" style={isMenuDisabled('capa') ? disabledItemStyle : { cursor: 'pointer' }}>
                  <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
                 <p style={{ margin: 0 }}>Quản lý CAPA</p>
               </div>
-              <div className="submenu-container">
+              <div className="submenu-container" style={{ paddingLeft: '12px' }}>
                 {!isMenuDisabled('capa') ? (
                   <>
-                    <Link href="/capa/add-task" style={{ textDecoration: 'none' }}>
-                      <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Thêm nhiệm vụ</p></div>
-                    </Link>
-                    <Link href="/capa/my-tasks" style={{ textDecoration: 'none' }}>
-                      <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ của tôi</p></div>
-                    </Link>
-                    <Link href="/capa/acceptance" style={{ textDecoration: 'none' }}>
-                      <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nghiệm thu</p></div>
-                    </Link>
+                    {(userRole === 'admin' || userRole === 'coordinator') ? (
+                      <Link href="/capa/add-task" style={{ textDecoration: 'none' }}>
+                        <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Thêm nhiệm vụ</p></div>
+                      </Link>
+                    ) : (
+                      <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Thêm nhiệm vụ</p></div>
+                    )}
+                    {(userRole === 'admin' || userRole === 'assignee') ? (
+                      <Link href="/capa/my-tasks" style={{ textDecoration: 'none' }}>
+                        <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ của tôi</p></div>
+                      </Link>
+                    ) : (
+                      <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ của tôi</p></div>
+                    )}
+                    {(userRole === 'admin' || userRole === 'coordinator') ? (
+                      <Link href="/capa/acceptance" style={{ textDecoration: 'none' }}>
+                        <div className="sidebar-item"><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ nghiệm thu</p></div>
+                      </Link>
+                    ) : (
+                      <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ nghiệm thu</p></div>
+                    )}
                   </>
                 ) : (
                   <>
                     <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Thêm nhiệm vụ</p></div>
                     <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ của tôi</p></div>
-                    <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nghiệm thu</p></div>
+                    <div className="sidebar-item" style={disabledItemStyle}><img src="/folder-close.JPEG" className="sidebar-img" alt="fc"/><p style={{ margin: 0 }}>Nhiệm vụ nghiệm thu</p></div>
                   </>
                 )}
               </div>
             </div>
 
-            {/* 4. BIỂU ĐỒ PHÂN TÍCH */}
+            {/* BIỂU ĐỒ PHÂN TÍCH */}
             <div style={{ marginBottom: '10px' }}>
-              {!isMenuDisabled('analytics') ? (
-                <Link href="/analytics" style={{ textDecoration: 'none' }}>
+              {!isMenuDisabled('charts') ? (
+                <Link href="/charts" style={{ textDecoration: 'none' }}>
                   <div className="sidebar-item">
                      <img src="/folder-open.JPEG" className="sidebar-img" alt="folder-open"/>
                     <p style={{ margin: 0 }}>Biểu đồ nhật ký và sự cố HSE</p>
@@ -240,7 +289,6 @@ export default function DashboardLayout({
                 </div>
               )}
             </div>
-
           </nav>
         </div>
 
@@ -253,7 +301,7 @@ export default function DashboardLayout({
         </div>
       </aside>
 
-      {/* Main Content */}
+      {/* VÙNG CHỨA NỘI DUNG CHÍNH CỦA TRANG CON */}
       <main style={{ flex: 1, padding: '24px', overflowY: 'auto', backgroundColor: '#E9ECF2' }}>
         {checkingAuth ? (
           <div style={{ padding: '32px', textAlign: 'center', color: '#64748B' }}>Đang xác thực phân quyền hệ thống...</div>

@@ -59,6 +59,10 @@ export default function LoginPage() {
         } else if (userRole === 'manager') {
           router.push('/charts'); // Vào trang app/(dashboard)/charts
           
+        } else if (userRole === 'assignee') {
+          // 🚀 BỔ SUNG: Cho phép role assignee đăng nhập thành công và chuyển hướng về trang Nhiệm vụ của tôi
+          router.push('/capa/my-tasks');
+          
         } else {
           // Trường hợp tài khoản có role nằm ngoài danh sách quy định trên
           setErrorMessage('[Lỗi]: Vai trò của tài khoản này không có quyền truy cập hệ thống!');
