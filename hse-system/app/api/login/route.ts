@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     }
 
     // CƠ CHẾ DỰ PHÒNG: Lấy UUID chính xác tuyệt đối của tài khoản vừa đăng nhập
-    let userId = authData?.user?.id;
+    let userId: string = authData?.user?.id || '';
     if (!userId) {
       const { data: { user } } = await supabase.auth.getUser();
       // 🌟 ĐÃ SỬA: Thêm || '' để xử lý triệt để lỗi TypeScript gán 'string | undefined' cho 'string'
